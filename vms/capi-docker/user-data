@@ -1,0 +1,196 @@
+#cloud-config
+hostname: vm-capi-docker
+fqdn: vm-capi-docker.lan
+ssh_authorized_keys:
+  - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDCAWBkS5iD7ORK59YUjJlPiWnzZXoFPbxlo8kvXjeGVgtUVD/FORZBvztoB9J1xTgE+DEg0dE2DiVrh3WXMWnUUwyaqjIu5Edo++P7xb53T9xRC7TUfc798NLAGk3CD8XvEGbDB7CD6Tvx7HcAco0WpEcPePcTcv89rZGPjal1nY4kGNT/0TWeECm99cXuWFjKm6WiMrir9ZN1yLcX/gjugrHmAGm8kQ/NJVEDRgSPV6jhppp7P/1+yqIUOOOXLx61d8oVG+ADlXEckXoetqHYjbzisxO/wa2KFM7cb5NTVKHFmxwVKX4kJeRL+I/94yLCiG05PidUFsIMzByPBEe/
+  - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC9D1m9eMr75japSYMX0Id/af1pyfDM2I1lPSwi2zZwYo8w0b3AyzV3w4iL8PzHCRmxwcm6/w5TfCxEHu7IzTJ4IkN7vIvJEVFPVCJNunuu1ZYahKkFB8g4q6+nsY6rj2ASpQRNrxkUTN2I4GmTRGB3N21uKe1KqbNuaCt5i0KxW0ydcZgAYZFs56qB8ie053VBeMBhhn3LxROKb7g3+NZ6kHkJiOo6p0q7iXiAOh0nvnSGjuSRGllOx/lPe+rdTN+NzuqWSN4sN9WPMjynqSRBMdI0TD7mI2i7uv67s2XpDIORX9dH6IudrLB4Ypz5QX/5Kxyc7Rk16HLSEn42bplj
+write_files:
+  -   path: /etc/systemd/system/home-ubuntu-Development.mount
+      permissions: '0664'
+      owner: root:root
+      content: |
+        [Unit]
+        Description=Development mount from host
+
+        [Mount]
+        What=/host-development
+        Where=/home/ubuntu/Development
+        Type=9p
+        Options=trans=virtio,version=9p2000.L
+
+        [Install]
+        WantedBy=multi-user.target
+  -   path: /usr/local/bin/kubectl-m
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        KUBECONFIG=$HOME/.kube/management-cluster/config kubectl "${@}"
+  -   path: /usr/local/bin/kubectl-w
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        KUBECONFIG=$HOME/.kube/workload-cluster/config kubectl "${@}"
+  -   path: /usr/local/bin/clusterctl-m
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        KUBECONFIG=$HOME/.kube/management-cluster/config clusterctl "${@}"
+  -   path: /usr/local/bin/clusterctl-w
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        KUBECONFIG=$HOME/.kube/workload-cluster/config clusterctl "${@}"
+  -   path: /usr/local/bin/helm-m
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        KUBECONFIG=$HOME/.kube/management-cluster/config helm "${@}"
+  -   path: /usr/local/bin/helm-w
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        KUBECONFIG=$HOME/.kube/workload-cluster/config helm "${@}"
+  -   path: /usr/local/bin/firstbootscript.sh
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        set -ex
+        export DEBIAN_FRONTEND=noninteractive
+        sudo apt-get update
+        sudo apt-get install -y 
+        sudo apt-get install -y --no-install-recommends \
+            apt-transport-https \
+            ca-certificates \
+            curl \
+            gnupg-agent \
+            software-properties-common \
+            gcc \
+            python \
+            git \
+            make \
+            libc6-dev \
+            jq
+            
+        sudo sed -i 's|RANDFILE|#RANDFILE|' /etc/ssl/openssl.cnf #Ubuntu is terrible.
+
+        curl -sSL https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+        sudo apt-key fingerprint 0EBFCD88
+        sudo add-apt-repository \
+          "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) \
+          stable"
+        sudo apt-get install -y --no-install-recommends \
+            docker-ce \
+            docker-ce-cli \
+            containerd.io
+        function get_cidr_address_from_interface {
+          local interface=$1
+          local ip=$(ip -4 -o addr s "${interface}" | awk '{ print $4; exit }')
+          if [ -z "${ip}" ] ; then
+            exit 1
+          fi
+          echo ${ip}
+        }
+        sudo tee /etc/profile <<EOF
+        export PATH=\$PATH:/usr/local/go/bin
+        export DOCKER_POD_CIDRS=$(get_cidr_address_from_interface docker0)
+        export DOCKER_SERVICE_CIDRS=10.0.0.0/24
+        export DOCKER_SERVICE_DOMAIN=cluster.local
+        EOF
+        source /etc/profile
+
+        sudo usermod -aG docker $USER
+
+        mkdir -p ~/go
+        git clone -b release-kustomize-v4.0 https://github.com/kubernetes-sigs/kustomize.git ~/go/kustomize
+        cd ~/go/kustomize/kustomize
+        go install .
+        cd ~
+        sudo mv ~/go/bin/kustomize /usr/local/bin/
+
+        sudo curl -sSL -o /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.7.0/kind-$(uname)-amd64
+        sudo chmod +x /usr/local/bin/kind
+
+        sudo curl -sSL -o /usr/local/bin/kubectl  https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+        sudo chmod +x /usr/local/bin/kubectl
+
+        sudo curl -sSL -o /usr/local/bin/kubeadm  https://storage.googleapis.com/kubernetes-release/release/$(curl -sSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubeadm
+        sudo chmod +x /usr/local/bin/kubeadm
+
+        curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+
+        sudo curl -sSL -o /usr/local/bin/clusterctl https://github.com/kubernetes-sigs/cluster-api/releases/download/v0.3.2/clusterctl-linux-amd64 -o clusterctl
+        sudo chmod +x /usr/local/bin/clusterctl
+
+        git clone https://github.com/kubernetes-sigs/cluster-api.git ~/cluster-api
+        # 62b7a1d777fd19a5af1884960eb59378844f90d6
+        tee ~/cluster-api/clusterctl-settings.json <<EOF
+        {
+          "providers": ["cluster-api","bootstrap-kubeadm","control-plane-kubeadm", "infrastructure-docker"],
+          "provider_repos": []
+        }
+        EOF
+        cd ~/cluster-api
+        sg docker -c "make -C test/infrastructure/docker docker-build REGISTRY=gcr.io/k8s-staging-capi-docker"
+        sg docker -c "make -C test/infrastructure/docker generate-manifests REGISTRY=gcr.io/k8s-staging-capi-docker"
+        ./cmd/clusterctl/hack/local-overrides.py
+        cd ~
+        tee ~/.cluster-api/clusterctl.yaml <<EOF
+        providers:
+          - name: docker
+            url: $HOME/.cluster-api/overrides/infrastructure-docker/latest/infrastructure-components.yaml
+            type: InfrastructureProvider
+        EOF
+
+
+        mkdir -p  ~/capi-dev/kind
+        tee ~/capi-dev/kind/kind-cluster-with-extramounts.yaml <<EOF
+        kind: Cluster
+        apiVersion: kind.sigs.k8s.io/v1alpha3
+        nodes:
+          - role: control-plane
+            extraMounts:
+              - hostPath: /var/run/docker.sock
+                containerPath: /var/run/docker.sock
+        EOF
+        sg docker -c "docker pull kindest/node:v1.17.0"
+
+        sg docker -c "clusterctl-m init --core cluster-api:v0.3.0 --bootstrap kubeadm:v0.3.0 --control-plane kubeadm:v0.3.0 --infrastructure docker:v0.3.0 --list-images >  ~/capi-dev/images.txt"
+        sg docker -c "grep -v gcr.io/k8s-staging-capi-docker/capd-manager-amd64:dev ~/capi-dev/images.txt | xargs -L1 -r docker pull"
+
+        cp ~/cluster-api/cmd/clusterctl/test/testdata/docker/v0.3.0/cluster-template.yaml ~/.cluster-api/overrides/infrastructure-docker/v0.3.0/
+
+        mkdir -p $HOME/.kube/management-cluster
+
+  -   path: /usr/local/bin/capi-docker-01-setup-management-cluster
+      permissions: '0755'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        set -ex
+        kind create cluster --config ~/capi-dev/kind/kind-cluster-with-extramounts.yaml --kubeconfig $HOME/.kube/management-cluster/config --name management-cluster
+        cat ~/capi-dev/images.txt | xargs -L1 -r kind load docker-image --name management-cluster
+        clusterctl-m init --core cluster-api:v0.3.0 --bootstrap kubeadm:v0.3.0 --control-plane kubeadm:v0.3.0 --infrastructure docker:v0.3.0
+
+
+runcmd:
+  - [ bash, -c, "dhclient -r || true "]
+  - [ bash, -c, "dhclient || true "]
+#TODO: we do the above, to make sure the dnsmasq in googlewifi gets the right clientname for dns, we should wait for dns to come back on the hosts before proceeding rather than the ugly apt-get update wait...
+  - [ apt-get, update ]
+  - [ systemctl, enable, --now, home-ubuntu-Development.mount ]
+  - [ /bin/su, -s, /bin/bash, -c, /usr/local/bin/firstbootscript.sh, ubuntu ]
+power_state:
+ delay: "now"
+ mode: reboot
+ message: Rebooting
+ timeout: 30
+ condition: True
